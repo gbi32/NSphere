@@ -165,6 +165,16 @@ threevector make_threevector(double x, double y, double z);
 double dotproduct(threevector X, threevector Y);
 threevector crossproduct(threevector X, threevector Y);
 double sigmatotal(double vrel, int npts, double halo_mass_for_calc, double rc_for_calc);
+// ================= START GABRIEL ADDITION =================
+// Forward declaration for the decaying-dark-matter kick routine.
+static void apply_decay_kicks(
+    double **particles,
+    int npts,
+    double decay_probability,
+    uint64_t seed,
+    int timestep
+);
+// ================== END GABRIEL ADDITION ==================
 
 // Serial SIDM scattering integration function declaration
 void perform_sidm_scattering_serial(double **particles, int npts, double dt, int timestep_idx, uint64_t sidm_seed, long long *Nscatter_total_step, double halo_mass_for_sidm, double rc_for_sidm, int *current_scatter_counts);
@@ -537,6 +547,15 @@ int g_doSimExtend = 0;       ///< Enable simulation extension mode (`--sim-exten
 char *g_extend_file_source = NULL; ///< Source file to extend from (`--extend-file`).
 int g_enable_logging = 0;    ///< Enable logging to file (controlled by `--log` flag).
 int g_enable_sidm_scattering = 0;    ///< Enable SIDM scattering physics (0=no, 1=yes). Default is OFF.
+// ================= START GABRIEL ADDITION =================
+// Master switch for the optional decaying-dark-matter physics.
+// 0 = disabled by default, 1 = enabled when the --decay flag is used.
+int g_enable_decay = 0;
+
+// Master switch for the optional time-varying Newton's constant.
+// 0 = disabled by default, 1 = enabled when the --variable-g flag is used.
+int g_enable_variable_g = 0;
+// ================== END GABRIEL ADDITION ==================
 int g_sidm_execution_mode = 1;       ///< SIDM execution mode: 0 for serial, 1 for parallel (default).
 int g_use_graph_coloring_sidm = 0;   ///< Use graph coloring algorithm for parallel SIDM (eliminates double-booking).
 int g_sidm_max_interaction_range = 10; ///< Maximum number of neighbors to check for SIDM scattering. Default is 10.
@@ -868,7 +887,10 @@ static double *g_L_init_vals = NULL;
 
 /** @brief Variables for tracking low angular momentum particles. */
 static int nlowest = 5;           ///< Number of lowest angular momentum particles to track.
-static int num_traj_particles = 10; ///< Number of particles to track in trajectories.dat (by original ID).
+// ================= START GABRIEL ADDITION =================
+// Number of particle trajectories for plotting.
+static int num_traj_particles = 1000; ///< Number of particles to track in trajectories.dat (by original ID).
+// ================== END GABRIEL ADDITION ==================
 static int *chosen = NULL;        ///< Array of indices (original IDs) for selected low-L particles.
 
 /**
@@ -7095,6 +7117,20 @@ printf("  \n");
             g_enable_sidm_scattering = 1;
             // This flag does not take a value, so 'i' is not incremented further.
         }
+        // ================= START GABRIEL ADDITION =================
+        // Enables decay physics when --decay is included in the command line.
+        else if (strcmp(argv[i], "--decay") == 0)
+        {
+            /** @note Flag to enable decaying dark matter physics. */
+            g_enable_decay = 1;
+        }
+        // Enables time-varying gravity when --variable-g is included in the command line.
+        else    if (strcmp(argv[i], "--variable-g") == 0)
+        {
+            /** @note Flag to enable a linearly decreasing Newton's constant. */
+            g_enable_variable_g = 1;
+        }
+        // ================== END GABRIEL ADDITION ==================
         else if (strcmp(argv[i], "--sidm-mode") == 0)
         {
             if (i + 1 >= argc) {
@@ -12986,7 +13022,21 @@ cleanup_diag_iteration:
 
             // Calculate absolute timestep for deterministic RNG (accounts for restart offset)
             int rng_timestep = (g_restart_mode_active ? g_restart_initial_timestep : 0) + j;
+            // ================= START GABRIEL ADDITION =================
+            // For Figure 4, decrease G linearly from G0 to 0.5*G0 over the simulation.
+            double current_G = G_CONST;
 
+            if (g_enable_variable_g)
+            {
+                double fraction_complete = (double)j / (double)(Ntimes - 1);
+                current_G = G_CONST * (1.0 - 0.5 * fraction_complete);
+            }
+
+            // Update the pre-calculated gravitational-force coefficient
+            // so the actual force uses the current timestep's value of G.
+            g_precalc_force_const = -(VEL_CONV_SQ * current_G)
+                                * (g_active_halo_mass / (double)npts);
+            // ================== END GABRIEL ADDITION ==================
             if (method_select == 0)
             {
 /****************************/
@@ -13102,7 +13152,6 @@ cleanup_diag_iteration:
                 // SIDM scattering after leapfrog drift completion
                 double current_active_rc_for_sidm = g_use_hernquist_aniso_profile ? g_scale_radius_param : (g_use_nfw_profile ? g_nfw_profile_rc : g_cored_profile_rc);
                 handle_sidm_step(particles, npts, dt, time, current_active_rc_for_sidm, display_method, 0, g_current_timestep_scatter_counts, rng_timestep);
-
                 // Record trajectory data at every timestep into buffer
 #pragma omp single
                     {
@@ -13379,7 +13428,10 @@ cleanup_diag_iteration:
                     if (ell != 0.0)
                     {
                         double M_enc = ((double)i / (double)npts) * g_active_halo_mass;
-                        double gravPart = (VEL_CONV_SQ * G_CONST) * M_enc;
+                        // ================= START GABRIEL ADDITION =================
+                        // Use the timestep-dependent value of G when variable-gravity mode is enabled.
+                        double gravPart = (VEL_CONV_SQ * current_G) * M_enc;
+                        // ================== END GABRIEL ADDITION ==================
                         r_crit = (ell * ell) * (alpha_param) / (gravPart);
                     }
                     else
@@ -13397,7 +13449,10 @@ cleanup_diag_iteration:
                             ell,
                             dt,
                             N_taumin,
-                            G_CONST,
+                            // ================= START GABRIEL ADDITION =================
+                            // Pass the timestep-dependent gravitational constant into the integrator.
+                            current_G,
+                            // ================== END GABRIEL ADDITION ==================
                             &r_new, &v_new);
                     }
                     else
@@ -13409,7 +13464,10 @@ cleanup_diag_iteration:
                             dt,
                             radius_tol, velocity_tol,
                             max_subdiv,
-                            G_CONST,
+                            // ================= START GABRIEL ADDITION =================
+                            // Pass the timestep-dependent gravitational constant into the integrator.
+                            current_G,
+                            // ================== END GABRIEL ADDITION ==================
                             out_type,
                             &r_new, &v_new);
                     }
@@ -13515,7 +13573,10 @@ cleanup_diag_iteration:
                         {
                             M_enc = ((double)i / (double)npts) * g_active_halo_mass;
                         }
-                        double gravPart = (VEL_CONV_SQ * G_CONST) * M_enc;
+                        // ================= START GABRIEL ADDITION =================
+                        // Use the timestep-dependent value of G for the integration-method switch.
+                        double gravPart = (VEL_CONV_SQ * current_G) * M_enc;
+                        // ================== END GABRIEL ADDITION ==================
                         r_crit = (ell * ell) * alpha_param / gravPart;
                     }
 
@@ -13525,19 +13586,40 @@ cleanup_diag_iteration:
                         doAdaptiveFullLeviCivita(
                             i, npts, r, v, ell, dt, N_taumin,
                             radius_tol, velocity_tol, max_subdiv,
-                            G_CONST, out_type, &r_new, &v_new);
+                            // ================= START GABRIEL ADDITION =================
+                            // Pass the current timestep's gravitational constant into whichever integrator is selected.
+                            current_G, out_type, &r_new, &v_new);
+                            // ================== END GABRIEL ADDITION ==================
                     }
                     else
                     {
                         doAdaptiveFullLeap(
                             i, npts, r, v, ell, dt,
                             radius_tol, velocity_tol, max_subdiv,
-                            G_CONST, out_type, &r_new, &v_new);
+                            // ================= START GABRIEL ADDITION =================
+                            // Pass the current timestep's gravitational constant into whichever integrator is selected.
+                            current_G, out_type, &r_new, &v_new);
+                            // ================== END GABRIEL ADDITION ==================
                     }
                     particles[0][i] = r_new;
                     particles[1][i] = v_new;
                 }
-
+                // ================= START GABRIEL ADDITION =================
+                // If decay physics is enabled, calculate the per-timestep decay probability
+                // and apply a random velocity kick to particles that decay.
+                if (g_enable_decay)
+                {
+                    double decay_probability = dt / (2.0 * totaltime);
+                
+                    apply_decay_kicks(
+                        particles,
+                        npts,
+                        decay_probability,
+                        (uint64_t)g_sidm_seed,
+                        rng_timestep
+                    );
+                }
+                // ================== END GABRIEL ADDITION ==================
                 // Record trajectory data at every timestep into buffer
 #pragma omp single
                     {
@@ -18639,7 +18721,91 @@ double sigmatotal(double vrel, int npts, double halo_mass_for_calc, double rc_fo
   }
   return 2.089e-10 * kappa * particle_mass_Msun; // Cross-section (kpc²)
 }
+// ================= START GABRIEL ADDITION =================
+// Applies the decaying-dark-matter model used for Figure 3.
+// Each particle has a probability of decaying during each timestep.
+// When a particle decays, it receives a
+// randomly oriented velocity kick of 100 km/s.
+// NSphere stores velocity using radial velocity and angular momentum,
+// so the velocity is temporarily converted into components, the kick
+// is added, and the result is converted back into NSphere variables.
+static void apply_decay_kicks(
+    double **particles,
+    int npts,
+    double decay_probability,
+    uint64_t seed,
+    int timestep
+) {
 
+#pragma omp parallel for schedule(static)
+    for (int i = 0; i < npts; i++) {
+
+        int pid = (int)particles[3][i];
+
+        // Decide whether this particle decays this timestep
+        double u_decay =
+            get_deterministic_rand(seed, timestep, pid, 10);
+
+        if (u_decay >= decay_probability) {
+            continue;
+        }
+
+        // Current particle velocity
+        double r = particles[0][i];
+
+        double vperp = particles[2][i] / r;
+
+        double vx = vperp * particles[5][i];
+        double vy = vperp * particles[6][i];
+        double vz = particles[1][i];
+
+        // Random isotropic kick direction
+        double u1 =
+            get_deterministic_rand(seed, timestep, pid, 11);
+
+        double u2 =
+            get_deterministic_rand(seed, timestep, pid, 12);
+
+        double costheta = 2.0 * u1 - 1.0;
+        double sintheta =
+            sqrt(fmax(0.0, 1.0 - costheta * costheta));
+
+        double phi = 2.0 * PI * u2;
+
+        const double kick_speed = 100.0 * kmsec_to_kpcmyr;   // 100 km/s converted to kpc/Myr
+
+        double dvx =
+            kick_speed * sintheta * cos(phi);
+
+        double dvy =
+            kick_speed * sintheta * sin(phi);
+
+        double dvz =
+            kick_speed * costheta;
+
+        // Apply kick
+        vx += dvx;
+        vy += dvy;
+        vz += dvz;
+
+        // Convert back to NSphere variables
+        particles[1][i] = vz;
+
+        double new_vperp =
+            sqrt(vx * vx + vy * vy);
+
+        particles[2][i] = r * new_vperp;
+
+        if (new_vperp > 1e-15) {
+            particles[5][i] = vx / new_vperp;
+            particles[6][i] = vy / new_vperp;
+        } else {
+            particles[5][i] = 1.0;
+            particles[6][i] = 0.0;
+        }
+    }
+}
+// ================== END GABRIEL ADDITION ==================
 static inline void perform_scatter_update(
     double **particles,
     int i,

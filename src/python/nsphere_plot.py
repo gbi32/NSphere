@@ -1044,7 +1044,10 @@ def read_lastparams(filename="data/lastparams.dat", return_suffix=True, user_suf
 npts, Ntimes, tfinal_factor, file_tag = 30000, 1001, 5, ""
 
 # Define column counts for various data structures
-ncol_traj_particles = 10
+# ================= START GABRIEL ADDITION =================
+# Number of particle trajectories stored in the trajectory file.
+ncol_traj_particles = 1000
+# ================== END GABRIEL ADDITION ==================
 nlowest = 5
 
 ncol_convergence = 2
@@ -2997,12 +3000,23 @@ def plot_trajectories(input_file, output_file):
         return None
     gc.collect()
     time = data[:, 0]
+    # ================= START GABRIEL ADDITION =================
+    # Optional Figure 2-style time axis.
+    # Keeps the same trajectory samples but remaps the displayed time axis
+    # evenly from 0 to 10000 to match the paper's Figure 2.
+    # time = np.linspace(0, 10000, len(data))
+    # ================== END GABRIEL ADDITION ==================
     plt.figure(figsize=(10, 6))
     ncols = data.shape[1]
     nparticles = (ncols - 1)//3
     for p in range(nparticles):
         r_col = 1 + 3*p
         plt.plot(time, data[:, r_col], linewidth=1.5)
+    # ================= START GABRIEL ADDITION =================
+    # Limit the y-axis to the relevant radius range for the trajectory plot.
+    # plt.xlim(0, 10000)
+    plt.ylim(0, 300)
+    # ================== END GABRIEL ADDITION ==================
     plt.xlabel(r'$t$ (Myr)', fontsize=12)
     plt.ylabel(r'$r(t)$ (kpc)', fontsize=12)
     plt.title(r'Particle Trajectories', fontsize=14)

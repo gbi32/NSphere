@@ -99,6 +99,7 @@ ifeq ($(USE_CLANG),1)
     LDFLAGS = -L$(GSL_DIR)/lib -L$(FFTW_DIR)/lib
     LDFLAGS += -lgsl -lgslcblas -lfftw3 -lfftw3_threads -lm
     LDFLAGS += $(DEBUG_FLAGS) # Add -g
+    LDFLAGS += -Wl,--stack,16777216 #Fix size issue
 # Debug linker flags are included via DEBUG_FLAGS
 
     # Target and Build Configuration
